@@ -1,0 +1,161 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id                 String   @id @default(uuid())
+  name               String
+  barcode            String?
+  category           String?
+  price              Float
+  isComposite        Boolean  @default(false)
+  image              String? // Base64 or URL
+  
+  // Relations
+  resaleIngredientId String?
+  resaleIngredient   Ingredient? @relation("ResaleIngredient", fields: [resaleIngredientId], references: [id])
+  resaleQuantity     Float?   @default(1)
+  
+  recipeItems        RecipeItem[]
+  saleItems          SaleItem[]
+  
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Ingredient {
+  id               String   @id @default(uuid())
+  name             String
+  barcode          String?
+  supplierId       String?
+  costPerPackage   Float
+  volumePerPackage Float
+  unit             String // 'ml', 'l', 'g', 'kg', 'un'
+  currentStock     Float
+  minStock         Float
+  costPerUnit      Float
+  
+  // Relations
+  recipeItems      RecipeItem[]
+  products         Product[]     @relation("ResaleIngredient") // Reverse relation for resaleIngredientId (manual handle via ID usually easier in simple app but relations are good)
+  
+  purchaseItems    PurchaseItem[]
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model RecipeItem {
+  id           String     @id @default(uuid())
+  productId    String
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+  quantity     Float
+
+  @@unique([productId, ingredientId])
+}
+
+model Supplier {
+  id             String   @id @default(uuid())
+  name           String
+  legalName      String?
+  type           String // 'PF' | 'PJ'
+  document       String
+  
+  // Contact
+  address        String?
+  phone          String?
+  email          String?
+  
+  // Additional
+  unitValue      Float?
+  
+  purchases      PurchaseRecord[]
+  
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model PurchaseRecord {
+  id          String   @id @default(uuid())
+  date        DateTime
+  totalValue  Float
+  
+  supplierId  String
+  supplier    Supplier @relation(fields: [supplierId], references: [id])
+  
+  items       PurchaseItem[]
+  
+  createdAt   DateTime @default(now())
+}
+
+model PurchaseItem {
+  id             String         @id @default(uuid())
+  purchaseId     String
+  purchase       PurchaseRecord @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  ingredientId   String
+  ingredient     Ingredient     @relation(fields: [ingredientId], references: [id])
+  
+  quantity       Float
+  cost           Float 
+}
+
+model Sale {
+  id            String   @id @default(uuid())
+  date          DateTime @default(now())
+  total         Float
+  paymentMethod String // 'credit', 'debit', 'cash', 'pix'
+  
+  customerId    String?
+  customerName  String?
+  
+  items         SaleItem[]
+  
+  fiscalJson    String? // Store simulated fiscal data as JSON string
+}
+
+model SaleItem {
+  id          String   @id @default(uuid())
+  saleId      String
+  sale        Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  productName String
+  
+  quantity    Float
+  priceAtSale Float
+  costAtSale  Float
+}
+
+// Financials
+model Expense {
+  id          String   @id @default(uuid())
+  description String
+  amount      Float
+  date        DateTime
+  category    String
+}
+
+model LossRecord {
+  id          String   @id @default(uuid())
+  date        DateTime
+  description String
+  value       Float
+  quantity    Float?
+}
+
+model Settings {
+  id         String @id @default("default")
+  fixedCosts Float  @default(0)
+  pixKey     String?
+  storeName  String?
+  logo       String? // Base64
+  company    String? // JSON string for CompanySettings
+}
