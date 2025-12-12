@@ -26,6 +26,10 @@ model Product {
   
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+
+  // Advanced Features
+  pricingTiers       PricingTier[]
+  batches            Batch[]
 }
 
 model Ingredient {
@@ -67,6 +71,7 @@ model Supplier {
   legalName      String?
   type           String // 'PF' | 'PJ'
   document       String
+  roles          String? // JSON string of roles array
   
   // Contact
   address        String?
@@ -118,6 +123,9 @@ model Sale {
   items         SaleItem[]
   
   fiscalJson    String? // Store simulated fiscal data as JSON string
+  
+  // Relations
+  routeItems    RouteItem[]
 }
 
 model SaleItem {
@@ -158,4 +166,61 @@ model Settings {
   storeName  String?
   logo       String? // Base64
   company    String? // JSON string for CompanySettings
+}
+
+model PricingTier {
+  id          String  @id @default(uuid())
+  productId   String
+  product     Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  label       String  // e.g., "Atacado", "Caixa Fechada"
+  minQuantity Int     // e.g., 12
+  unitPrice   Float   // e.g., 4.50 (instead of normal 5.00)
+}
+
+model Batch {
+  id             String    @id @default(uuid())
+  productId      String
+  product        Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  code           String    // Lote 123
+  expirationDate DateTime
+  initialStock   Float
+  currentStock   Float
+  createdAt      DateTime  @default(now())
+}
+
+// Logistics Models
+model Driver {
+  id        String   @id @default(uuid())
+  name      String
+  phone     String?
+  license   String?  // CNH
+  active    Boolean  @default(true)
+  routes    Route[]
+  createdAt DateTime @default(now())
+}
+
+model Route {
+  id          String      @id @default(uuid())
+  date        DateTime    @default(now())
+  status      String      // 'pending', 'started', 'completed'
+  driverId    String?
+  driver      Driver?     @relation(fields: [driverId], references: [id])
+  items       RouteItem[]
+  
+  departureTime DateTime?
+  arrivalTime   DateTime?
+  
+  updatedAt   DateTime    @updatedAt
+}
+
+model RouteItem {
+  id        String  @id @default(uuid())
+  routeId   String
+  route     Route   @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  
+  saleId    String
+  sale      Sale    @relation(fields: [saleId], references: [id])
+  
+  status    String  // 'pending', 'delivered', 'failed'
+  order     Int     // Sequence in route
 }

@@ -22,37 +22,71 @@ app.get('/api/products', async (req, res) => {
 
     const products = await prisma.product.findMany({
         where,
-        include: { recipeItems: true } // Include recipe for calculations
+        include: {
+            recipeItems: true,
+            pricingTiers: true,
+            batches: {
+                where: { currentStock: { gt: 0 } },
+                orderBy: { expirationDate: 'asc' }
+            }
+        }
     });
     res.json(products);
 });
 
 app.post('/api/products', async (req, res) => {
-    const { recipeItems, ...data } = req.body;
+    const { recipeItems, pricingTiers, batches, id, ...data } = req.body;
     try {
         const product = await prisma.product.create({
             data: {
                 ...data,
                 recipeItems: {
-                    create: recipeItems
+                    create: Array.isArray(recipeItems) ? recipeItems : []
+                },
+                pricingTiers: {
+                    create: Array.isArray(pricingTiers) ? pricingTiers : []
+                },
+                batches: {
+                    create: Array.isArray(batches) ? batches : []
                 }
             }
         });
         res.json(product);
-    } catch (e) {
-        res.status(500).json({ error: String(e) });
     }
+        });
+res.json(product);
+    } catch (e) {
+    res.status(500).json({ error: String(e) });
+}
 });
 
 // --- Suppliers ---
 app.get('/api/suppliers', async (req, res) => {
     const suppliers = await prisma.supplier.findMany();
-    res.json(suppliers);
+    res.json(suppliers.map(s => ({
+        ...s,
+        roles: s.roles ? JSON.parse(s.roles) : []
+    })));
 });
 
 app.post('/api/suppliers', async (req, res) => {
-    const supplier = await prisma.supplier.create({ data: req.body });
-    res.json(supplier);
+    const { roles, ...rest } = req.body;
+    const supplier = await prisma.supplier.create({
+        data: {
+            ...rest,
+            roles: roles ? JSON.stringify(roles) : "[]"
+        }
+    });
+    res.json({
+        ...supplier,
+        roles: supplier.roles ? JSON.parse(supplier.roles) : []
+    });
+});
+
+app.delete('/api/suppliers/:id', async (req, res) => {
+    const { id } = req.params;
+    await prisma.supplier.delete({ where: { id } });
+    res.json({ success: true });
 });
 
 // --- Ingredients ---
@@ -64,6 +98,54 @@ app.get('/api/ingredients', async (req, res) => {
 app.post('/api/ingredients', async (req, res) => {
     const ingredient = await prisma.ingredient.create({ data: req.body });
     res.json(ingredient);
+});
+
+app.delete('/api/ingredients/:id', async (req, res) => {
+    const { id } = req.params;
+    await prisma.ingredient.delete({ where: { id } });
+    res.json({ success: true });
+});
+
+// --- Product Updates (Tiers & Batches) ---
+app.put('/api/products/:id', async (req, res) => {
+    const { id } = req.params;
+    const { recipeItems, pricingTiers, batches, ...data } = req.body;
+    try {
+        const product = await prisma.product.update({
+            where: { id },
+            data: data
+        });
+
+        if (pricingTiers) {
+            await prisma.pricingTier.deleteMany({ where: { productId: id } });
+            if (pricingTiers.length > 0) {
+                await prisma.pricingTier.createMany({
+                    data: pricingTiers.map((t: any) => ({ ...t, productId: id }))
+                });
+            }
+        }
+
+        res.json(product);
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.post('/api/batches', async (req, res) => {
+    const { productId, quantity, costPerUnit, ...data } = req.body;
+    try {
+        const batch = await prisma.batch.create({
+            data: {
+                productId,
+                ...data,
+                initialStock: quantity,
+                currentStock: quantity
+            }
+        });
+        res.json(batch);
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
 });
 
 // --- Sales (Transaction) ---
@@ -207,6 +289,51 @@ app.get('/api/sales', async (req, res) => {
         orderBy: { date: 'desc' }
     });
     res.json(sales);
+});
+
+// --- Logistics (Drivers & Routes) ---
+
+app.get('/api/drivers', async (req, res) => {
+    const drivers = await prisma.driver.findMany({ where: { active: true } });
+    res.json(drivers);
+});
+
+app.post('/api/drivers', async (req, res) => {
+    const driver = await prisma.driver.create({ data: req.body });
+    res.json(driver);
+});
+
+app.get('/api/routes', async (req, res) => {
+    const routes = await prisma.route.findMany({
+        include: {
+            driver: true,
+            items: { include: { sale: true } }
+        },
+        orderBy: { date: 'desc' }
+    });
+    res.json(routes);
+});
+
+app.post('/api/routes', async (req, res) => {
+    const { driverId, saleIds } = req.body;
+    try {
+        const route = await prisma.route.create({
+            data: {
+                status: 'pending',
+                driverId: driverId,
+                items: {
+                    create: saleIds.map((saleId: string, index: number) => ({
+                        saleId,
+                        status: 'pending',
+                        order: index
+                    }))
+                }
+            }
+        });
+        res.json(route);
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.listen(PORT, () => {

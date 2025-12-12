@@ -1,510 +1,695 @@
-
 import React, { useState, useEffect } from 'react';
-import { Plus, Package, Search, Trash2, Edit2, Info, ScanBarcode, Calculator, XCircle } from 'lucide-react';
-import { Ingredient, Product, UnitType, RecipeItem, Supplier } from '../types';
+import {
+    Plus, Package, Search, Trash2, Edit2, Info,
+    ScanBarcode, Calculator, X, ChevronDown, Check,
+    AlertTriangle, Calendar, Filter, Boxes, ArrowRightLeft
+} from 'lucide-react';
 import { api } from '../services/api';
+import { useToast } from '../contexts/ToastContext';
 import { Button } from '../components/ui/Button';
-import { Card } from '../components/ui/Card';
+
+// --- Types ---
+interface Ingredient {
+    id: string;
+    name: string;
+    unit: string; // 'UN', 'KG', 'L', 'CX', 'FD'
+    costPerPackage: number;
+    volumePerPackage: number;
+    currentStock: number;
+    minStock: number;
+    costPerUnit: number;
+}
+
+interface Product {
+    id: string;
+    name: string;
+    price: number;
+    category?: string;
+    barcode?: string;
+    image?: string;
+    isComposite: boolean;
+    resaleIngredientId?: string;
+    // Relationships
+    batches?: any[];
+    pricingTiers?: any[];
+    recipeItems?: any[];
+}
 
 export default function Inventory() {
-    const [activeTab, setActiveTab] = useState<'ingredients' | 'products'>('ingredients');
+    const { showToast } = useToast();
+    const [activeTab, setActiveTab] = useState<'products' | 'ingredients'>('products');
+    const [searchTerm, setSearchTerm] = useState('');
+    const [loading, setLoading] = useState(false);
+
+    // Data
     const [ingredients, setIngredients] = useState<Ingredient[]>([]);
     const [products, setProducts] = useState<Product[]>([]);
-    const [suppliers, setSuppliers] = useState<Supplier[]>([]);
 
     // Modals
-    const [isIngModalOpen, setIsIngModalOpen] = useState(false);
-    const [isProdModalOpen, setIsProdModalOpen] = useState(false);
+    const [isProductModalOpen, setIsProductModalOpen] = useState(false);
+    const [isIngredientModalOpen, setIsIngredientModalOpen] = useState(false);
+    const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
 
-    // Forms
-    const [searchTerm, setSearchTerm] = useState('');
-    const [newIngredient, setNewIngredient] = useState<Partial<Ingredient>>({ unit: UnitType.UN });
-    const [newProduct, setNewProduct] = useState<Partial<Product>>({
-        isComposite: false,
-        recipe: [],
-        resaleQuantity: 1
-    });
+    // Form State
+    const [editingProduct, setEditingProduct] = useState<Partial<Product>>({ isComposite: false });
+    const [editingIngredient, setEditingIngredient] = useState<Partial<Ingredient>>({ unit: 'UN' });
+    const [editingBatch, setEditingBatch] = useState<any>({});
 
+    // Product Modal Tabs
+    const [productTab, setProductTab] = useState<'basic' | 'recipe' | 'pricing' | 'stock'>('basic');
+
+    // --- Effects ---
     useEffect(() => {
-        fetchData();
+        loadData();
     }, []);
 
-    const fetchData = async () => {
+    const loadData = async () => {
+        setLoading(true);
         try {
-            const [ings, prods, sups] = await Promise.all([
-                api.ingredients.list(),
+            const [prods, ings] = await Promise.all([
                 api.products.list(),
-                api.suppliers.list()
+                api.ingredients.list()
             ]);
-            setIngredients(ings);
             setProducts(prods);
-            setSuppliers(sups);
-        } catch (e) {
-            console.error("Error fetching inventory", e);
+            setIngredients(ings);
+        } catch (error) {
+            console.error(error);
+            showToast("Erro ao carregar dados do estoque", "error");
+        } finally {
+            setLoading(false);
         }
     };
 
-    // --- HANDLERS INGREDIENTS ---
-
-    const handleSaveIngredient = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!newIngredient.name || !newIngredient.costPerPackage) return;
-
-        // Calc cost per unit
-        const costPerUnit = newIngredient.volumePerPackage && newIngredient.volumePerPackage > 0
-            ? newIngredient.costPerPackage / newIngredient.volumePerPackage
-            : 0;
-
-        const ingData = {
-            ...newIngredient,
-            volumePerPackage: Number(newIngredient.volumePerPackage || 1),
-            costPerPackage: Number(newIngredient.costPerPackage),
-            currentStock: Number(newIngredient.currentStock || 0),
-            minStock: Number(newIngredient.minStock || 0),
-            costPerUnit
-        };
-
-        await api.ingredients.create(ingData);
-        setIsIngModalOpen(false);
-        setNewIngredient({ unit: UnitType.UN });
-        fetchData();
-    };
-
-    const handleDeleteIngredient = (id: string) => {
-        if (confirm('Tem certeza? (Funcionalidade de delete ainda não implementada na API)')) {
-            // Placeholder: API Delete endpoint needed
-            console.warn("Delete not implemented in API server yet");
+    // --- Handlers: Product ---
+    const handleOpenProduct = (product?: Product) => {
+        if (product) {
+            setEditingProduct({ ...product });
+        } else {
+            setEditingProduct({
+                isComposite: false,
+                pricingTiers: [],
+                recipeItems: [],
+                batches: []
+            });
         }
+        setProductTab('basic');
+        setIsProductModalOpen(true);
     };
-
-    // --- HANDLERS PRODUCTS ---
 
     const handleSaveProduct = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!newProduct.name || !newProduct.price) return;
+        if (!editingProduct.name || !editingProduct.price) {
+            showToast("Nome e Preço são obrigatórios", "error");
+            return;
+        }
 
-        // For Prisma logic, we send recipeItems differently or as is
-        // Our server expects { ...data, recipeItems: [] }
+        try {
+            const payload = {
+                ...editingProduct,
+                price: Number(editingProduct.price),
+                recipeItems: editingProduct.recipeItems || [],
+                pricingTiers: editingProduct.pricingTiers || []
+            };
 
-        // Transform recipe to match server expectation if needed
-        // Current frontend 'recipe' is array of { ingredientId, quantity }
-        // Server expects recipeItems: { create: [...] }
-
-        const serverPayload = {
-            name: newProduct.name,
-            barcode: newProduct.barcode,
-            category: newProduct.category || 'Geral',
-            price: Number(newProduct.price),
-            isComposite: newProduct.isComposite || false,
-            resaleIngredientId: newProduct.resaleIngredientId,
-            resaleQuantity: newProduct.isComposite ? null : Number(newProduct.resaleQuantity || 1),
-            recipeItems: newProduct.isComposite ? newProduct.recipe?.map(r => ({
-                ingredientId: r.ingredientId,
-                quantity: r.quantity
-            })) : []
-        };
-
-        await api.products.create(serverPayload);
-        setIsProdModalOpen(false);
-        setNewProduct({ isComposite: false, recipe: [], resaleQuantity: 1 });
-        fetchData();
-    };
-
-    const handleDeleteProduct = (id: string) => {
-        if (confirm('Remover este produto? (Funcionalidade de delete ainda não implementada na API)')) {
-            console.warn("Delete not implemented");
+            if (editingProduct.id) {
+                await api.products.update(editingProduct.id, payload);
+                showToast("Produto atualizado com sucesso", "success");
+            } else {
+                await api.products.create(payload);
+                showToast("Produto criado com sucesso", "success");
+            }
+            setIsProductModalOpen(false);
+            loadData();
+        } catch (error) {
+            console.error(error);
+            showToast("Erro ao salvar produto", "error");
         }
     };
 
+    const handleDeleteProduct = async (id: string) => {
+        if (!window.confirm("Tem certeza que deseja excluir este produto?")) return;
+        try {
+            await api.products.delete(id); // Ensure API supports this or add fallback
+            showToast("Produto removido", "success");
+            loadData();
+        } catch (error) {
+            showToast("Erro ao remover produto", "error");
+        }
+    };
+
+    // --- Handlers: Ingredient ---
+    const handleOpenIngredient = (ing?: Ingredient) => {
+        if (ing) {
+            setEditingIngredient({ ...ing });
+        } else {
+            setEditingIngredient({ unit: 'UN' });
+        }
+        setIsIngredientModalOpen(true);
+    };
+
+    const handleSaveIngredient = async (e: React.FormEvent) => {
+        e.preventDefault();
+        try {
+            const cost = Number(editingIngredient.costPerPackage) || 0;
+            const vol = Number(editingIngredient.volumePerPackage) || 1;
+
+            const payload = {
+                ...editingIngredient,
+                costPerPackage: cost,
+                volumePerPackage: vol,
+                currentStock: Number(editingIngredient.currentStock) || 0,
+                costPerUnit: cost / vol
+            };
+
+            if (editingIngredient.id) {
+                // await api.ingredients.update(editingIngredient.id, payload);
+                showToast("Edição de insumo não implementada (MVP)", "info");
+            } else {
+                await api.ingredients.create(payload);
+                showToast("Insumo criado", "success");
+            }
+            setIsIngredientModalOpen(false);
+            loadData();
+        } catch (error) {
+            showToast("Erro ao salvar insumo", "error");
+        }
+    };
+
+    const handleDeleteIngredient = async (id: string) => {
+        if (!window.confirm("Excluir este insumo?")) return;
+        try {
+            await api.ingredients.delete(id);
+            showToast("Insumo excluído", "success");
+            loadData();
+        } catch (error) {
+            showToast("Erro ao excluir insumo", "error");
+        }
+    };
+
+    // --- Recipe Logic ---
     const addRecipeItem = () => {
-        setNewProduct({
-            ...newProduct,
-            recipe: [...(newProduct.recipe || []), { ingredientId: '', quantity: 0 }]
-        });
+        const items = editingProduct.recipeItems || [];
+        setEditingProduct({ ...editingProduct, recipeItems: [...items, { ingredientId: '', quantity: 0 }] });
     };
 
-    const updateRecipeItem = (index: number, field: keyof RecipeItem, value: any) => {
-        const newRecipe = [...(newProduct.recipe || [])];
-        newRecipe[index] = { ...newRecipe[index], [field]: value };
-        setNewProduct({ ...newProduct, recipe: newRecipe });
+    const updateRecipeItem = (idx: number, field: string, value: any) => {
+        const items = [...(editingProduct.recipeItems || [])];
+        items[idx] = { ...items[idx], [field]: value };
+        setEditingProduct({ ...editingProduct, recipeItems: items });
     };
 
-    const removeRecipeItem = (index: number) => {
-        const newRecipe = [...(newProduct.recipe || [])];
-        newRecipe.splice(index, 1);
-        setNewProduct({ ...newProduct, recipe: newRecipe });
+    const removeRecipeItem = (idx: number) => {
+        const items = [...(editingProduct.recipeItems || [])];
+        items.splice(idx, 1);
+        setEditingProduct({ ...editingProduct, recipeItems: items });
     };
 
-    // --- CALCULATIONS ---
-
-    const calculateCost = (prod: Partial<Product>) => {
-        if (prod.isComposite) {
-            return (prod.recipe || []).reduce((acc, item) => {
-                const ing = ingredients.find(i => i.id === item.ingredientId);
-                return acc + (ing ? ing.costPerUnit * item.quantity : 0);
-            }, 0);
-        } else if (prod.resaleIngredientId) {
-            const ing = ingredients.find(i => i.id === prod.resaleIngredientId);
-            return ing ? ing.costPerUnit * (prod.resaleQuantity || 1) : 0;
-        }
-        return 0;
-    };
-
-    const estimatedCost = calculateCost(newProduct);
-    const profitMargin = newProduct.price ? ((newProduct.price - estimatedCost) / newProduct.price) * 100 : 0;
-
-    // --- UI HELPERS ---
-
-    const filteredIngredients = ingredients.filter(i => i.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    // --- Helpers ---
     const filteredProducts = products.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    const filteredIngredients = ingredients.filter(i => i.name.toLowerCase().includes(searchTerm.toLowerCase()));
 
-    const inputClass = "w-full bg-white border border-slate-300 text-slate-900 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5";
-    const labelClass = "block mb-1 text-xs font-bold text-slate-500 uppercase";
-
+    // --- Render ---
     return (
-        <div className="space-y-6 pb-24">
+        <div className="h-full flex flex-col fade-in">
             {/* Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                 <div>
-                    <h1 className="text-3xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
-                        <Package className="text-indigo-600" /> Gestão de Estoque
-                    </h1>
-                    <p className="text-slate-500 mt-1">Gerencie insumos, fichas técnicas e produtos finais.</p>
+                    <h1 className="text-3xl font-bold text-[var(--md-sys-color-on-surface)]">Estoque</h1>
+                    <p className="text-[var(--md-sys-color-on-surface-variant)]">Gerencie produtos, fichas técnicas e insumos</p>
                 </div>
-                <div className="flex gap-3">
-                    <Button variant="tonal" icon={<Package size={18} />} onClick={() => { setNewIngredient({ unit: UnitType.UN }); setIsIngModalOpen(true); }}>Novo Insumo</Button>
-                    <Button variant="filled" icon={<Plus size={18} />} onClick={() => { setNewProduct({ isComposite: false, recipe: [], resaleQuantity: 1 }); setIsProdModalOpen(true); }}>Novo Produto</Button>
+
+                <div className="flex items-center gap-3">
+                    {/* Search */}
+                    <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                        <input
+                            type="text"
+                            placeholder="Buscar..."
+                            className="pl-10 pr-4 py-2 rounded-full border border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface)] focus:ring-2 focus:ring-[var(--md-sys-color-primary)] outline-none"
+                            value={searchTerm}
+                            onChange={e => setSearchTerm(e.target.value)}
+                        />
+                    </div>
                 </div>
             </div>
 
-            {/* Tabs & Search */}
-            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-2 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="flex bg-slate-100 p-1 rounded-xl w-full sm:w-auto">
-                    <button
-                        onClick={() => setActiveTab('ingredients')}
-                        className={`flex-1 sm:flex-none px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'ingredients' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                        Insumos ({ingredients.length})
-                    </button>
-                    <button
-                        onClick={() => setActiveTab('products')}
-                        className={`flex-1 sm:flex-none px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'products' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                        Produtos ({products.length})
-                    </button>
-                </div>
-                <div className="relative w-full sm:w-64">
-                    <Search className="absolute left-3 top-2.5 text-slate-400" size={18} />
-                    <input
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                        placeholder="Buscar..."
-                        value={searchTerm}
-                        onChange={e => setSearchTerm(e.target.value)}
-                    />
+            {/* Tabs */}
+            <div className="flex items-center gap-2 mb-6 border-b border-[var(--md-sys-color-outline-variant)]">
+                <button
+                    onClick={() => setActiveTab('products')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-all flex items-center gap-2
+                        ${activeTab === 'products' ? 'border-[var(--md-sys-color-primary)] text-[var(--md-sys-color-primary)]' : 'border-transparent text-[var(--md-sys-color-on-surface-variant)] hover:bg-black/5'}
+                    `}
+                >
+                    <Package size={18} /> Produtos
+                </button>
+                <button
+                    onClick={() => setActiveTab('ingredients')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-all flex items-center gap-2
+                        ${activeTab === 'ingredients' ? 'border-[var(--md-sys-color-primary)] text-[var(--md-sys-color-primary)]' : 'border-transparent text-[var(--md-sys-color-on-surface-variant)] hover:bg-black/5'}
+                    `}
+                >
+                    <Boxes size={18} /> Insumos
+                </button>
+
+                <div className="ml-auto pb-2">
+                    <Button icon={<Plus size={18} />} onClick={() => activeTab === 'products' ? handleOpenProduct() : handleOpenIngredient()}>
+                        {activeTab === 'products' ? 'Novo Produto' : 'Novo Insumo'}
+                    </Button>
                 </div>
             </div>
 
-            {/* CONTENT */}
-            {activeTab === 'ingredients' ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                    {filteredIngredients.map(ing => (
-                        <Card key={ing.id} className={`p-4 border-l-4 ${ing.currentStock < ing.minStock ? 'border-l-red-500 bg-red-50/30' : 'border-l-indigo-500'}`}>
-                            <div className="flex justify-between items-start mb-2">
-                                <div>
-                                    <h3 className="font-bold text-slate-800">{ing.name}</h3>
-                                    <p className="text-xs text-slate-500 uppercase font-semibold">{ing.supplier || 'Fornecedor n/d'}</p>
-                                </div>
-                                <div className="flex gap-2">
-                                    {/* Edit disabled for MVP migration until PUT endpoint ready, or re-open modal pre-filled but save creates new? Disabled for safety */}
-                                    <button onClick={() => { /* setNewIngredient(ing); setIsIngModalOpen(true); */ alert("Edição em breve"); }} className="p-1.5 hover:bg-slate-100 rounded text-slate-500"><Edit2 size={16} /></button>
-                                    <button onClick={() => handleDeleteIngredient(ing.id)} className="p-1.5 hover:bg-red-50 rounded text-red-400"><Trash2 size={16} /></button>
-                                </div>
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto pb-20 custom-scrollbar">
+                {loading ? (
+                    <div className="flex justify-center py-20"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" /></div>
+                ) : (
+                    <>
+                        {/* Products List */}
+                        {activeTab === 'products' && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                {filteredProducts.map(product => (
+                                    <div key={product.id} className="bg-[var(--md-sys-color-surface-container-low)] p-4 rounded-[16px] border border-[var(--md-sys-color-outline-variant)] hover:shadow-md transition-all group">
+                                        <div className="flex gap-4">
+                                            <div className="w-16 h-16 rounded-lg bg-[var(--md-sys-color-surface-container-high)] flex items-center justify-center shrink-0">
+                                                {product.image ? <img src={product.image} className="w-full h-full object-cover rounded-lg" /> : <Package className="text-[var(--md-sys-color-primary)]" />}
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <h3 className="font-bold text-[var(--md-sys-color-on-surface)] truncate">{product.name}</h3>
+                                                <p className="text-xs text-[var(--md-sys-color-on-surface-variant)] mb-1">
+                                                    {product.category || 'Sem categoria'}
+                                                </p>
+                                                <div className="flex items-center gap-2 mt-2">
+                                                    <span className="font-bold text-[var(--md-sys-color-primary)]">
+                                                        R$ {product.price.toFixed(2)}
+                                                    </span>
+                                                    {product.isComposite && (
+                                                        <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-medium">Composto</span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="flex justify-end gap-2 mt-4 pt-4 border-t border-[var(--md-sys-color-outline-variant)] opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <button onClick={() => handleOpenProduct(product)} className="p-2 hover:bg-[var(--md-sys-color-surface-variant)] rounded-full text-[var(--md-sys-color-primary)]">
+                                                <Edit2 size={16} />
+                                            </button>
+                                            <button onClick={() => handleDeleteProduct(product.id)} className="p-2 hover:bg-red-50 rounded-full text-red-600">
+                                                <Trash2 size={16} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
-                            <div className="grid grid-cols-2 gap-4 mt-4 bg-white p-3 rounded-xl border border-slate-100">
-                                <div>
-                                    <span className="block text-[10px] text-slate-400 font-bold uppercase">Estoque Atual</span>
-                                    <span className={`text-lg font-bold ${ing.currentStock < ing.minStock ? 'text-red-600' : 'text-slate-800'}`}>
-                                        {ing.currentStock.toFixed(1)} <span className="text-xs text-slate-400">{ing.unit}</span>
-                                    </span>
-                                </div>
-                                <div>
-                                    <span className="block text-[10px] text-slate-400 font-bold uppercase">Custo Unit.</span>
-                                    <span className="text-lg font-bold text-slate-800">
-                                        R$ {ing.costPerUnit.toFixed(2)}
-                                    </span>
-                                </div>
+                        )}
+
+                        {/* Ingredients List */}
+                        {activeTab === 'ingredients' && (
+                            <div className="bg-[var(--md-sys-color-surface)] rounded-xl border border-[var(--md-sys-color-outline-variant)] overflow-hidden">
+                                <table className="w-full text-left text-sm">
+                                    <thead className="bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)] uppercase text-xs font-bold">
+                                        <tr>
+                                            <th className="p-4">Nome</th>
+                                            <th className="p-4">Unidade</th>
+                                            <th className="p-4">Custo/Emb.</th>
+                                            <th className="p-4">Estoque</th>
+                                            <th className="p-4 text-right">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-[var(--md-sys-color-outline-variant)]">
+                                        {filteredIngredients.map(ing => (
+                                            <tr key={ing.id} className="hover:bg-[var(--md-sys-color-surface-container-highest)] transition-colors">
+                                                <td className="p-4 font-medium">{ing.name}</td>
+                                                <td className="p-4 text-[var(--md-sys-color-on-surface-variant)]">{ing.unit} ({ing.volumePerPackage})</td>
+                                                <td className="p-4">R$ {ing.costPerPackage.toFixed(2)}</td>
+                                                <td className="p-4">
+                                                    <span className={`px-2 py-1 rounded-full text-xs font-bold 
+                                                        ${ing.currentStock <= ing.minStock
+                                                            ? 'bg-red-100 text-red-700'
+                                                            : 'bg-green-100 text-green-700'}`}>
+                                                        {ing.currentStock.toFixed(2)}
+                                                    </span>
+                                                </td>
+                                                <td className="p-4 text-right">
+                                                    <button onClick={() => handleDeleteIngredient(ing.id)} className="p-2 hover:bg-red-50 text-red-600 rounded-full">
+                                                        <Trash2 size={16} />
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
                             </div>
-                        </Card>
-                    ))}
-                    {filteredIngredients.length === 0 && <div className="col-span-full text-center py-10 text-slate-400">Nenhum insumo encontrado.</div>}
-                </div>
-            ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                    {filteredProducts.map(prod => {
-                        const prodCost = calculateCost(prod);
-                        const margin = prod.price > 0 ? ((prod.price - prodCost) / prod.price) * 100 : 0;
-                        return (
-                            <Card key={prod.id} className="p-4 border-l-4 border-l-emerald-500">
-                                <div className="flex justify-between items-start mb-2">
-                                    <div>
-                                        <h3 className="font-bold text-slate-800">{prod.name}</h3>
-                                        <p className="text-xs text-slate-500 uppercase font-semibold flex items-center gap-1">
-                                            {prod.isComposite ? <Info size={12} /> : <Package size={12} />}
-                                            {prod.isComposite ? 'Ficha Técnica' : `Revenda (${prod.resaleQuantity || 1} un)`}
-                                        </p>
-                                    </div>
-                                    <div className="flex gap-2">
-                                        <button onClick={() => { /* setNewProduct(prod); setIsProdModalOpen(true); */ alert("Edição em breve"); }} className="p-1.5 hover:bg-slate-100 rounded text-slate-500"><Edit2 size={16} /></button>
-                                        <button onClick={() => handleDeleteProduct(prod.id)} className="p-1.5 hover:bg-red-50 rounded text-red-400"><Trash2 size={16} /></button>
+                        )}
+                    </>
+                )}
+            </div>
+
+            {/* --- Modals --- */}
+
+            {/* Product Modal */}
+            {isProductModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                    <div className="bg-[var(--md-sys-color-surface)] w-full max-w-4xl max-h-[90vh] rounded-[24px] shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+                        <div className="p-6 border-b border-[var(--md-sys-color-outline-variant)] flex justify-between items-center bg-[var(--md-sys-color-surface-container)]">
+                            <h2 className="text-xl font-bold">{editingProduct.id ? 'Editar Produto' : 'Novo Produto'}</h2>
+                            <button onClick={() => setIsProductModalOpen(false)} className="p-2 hover:bg-black/10 rounded-full"><X size={20} /></button>
+                        </div>
+
+                        <div className="flex border-b border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface)]">
+                            {['basic', 'recipe', 'pricing', 'stock'].map((tab) => (
+                                <button
+                                    key={tab}
+                                    onClick={() => setProductTab(tab as any)}
+                                    className={`flex-1 py-3 text-sm font-medium border-b-2 transition-all capitalize
+                                        ${productTab === tab
+                                            ? 'border-[var(--md-sys-color-primary)] text-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-surface-container-low)]'
+                                            : 'border-transparent text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-highest)]'}
+                                    `}
+                                >
+                                    {tab === 'basic' && 'Dados Básicos'}
+                                    {tab === 'recipe' && 'Ficha Técnica'}
+                                    {tab === 'pricing' && 'Preços'}
+                                    {tab === 'stock' && 'Estoque'}
+                                </button>
+                            ))}
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-6 bg-[var(--md-sys-color-surface-container-low)]">
+                            {/* Basic Tab */}
+                            {productTab === 'basic' && (
+                                <div className="space-y-4 max-w-2xl mx-auto">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="col-span-2">
+                                            <label className="text-xs font-bold text-[var(--md-sys-color-on-surface-variant)] uppercase">Nome do Produto</label>
+                                            <input
+                                                className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 focus:ring-[var(--md-sys-color-primary)]"
+                                                value={editingProduct.name || ''}
+                                                onChange={e => setEditingProduct({ ...editingProduct, name: e.target.value })}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs font-bold text-[var(--md-sys-color-on-surface-variant)] uppercase">Preço Venda</label>
+                                            <input
+                                                type="number" step="0.01"
+                                                className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 focus:ring-[var(--md-sys-color-primary)]"
+                                                value={editingProduct.price || ''}
+                                                onChange={e => setEditingProduct({ ...editingProduct, price: parseFloat(e.target.value) })}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs font-bold text-[var(--md-sys-color-on-surface-variant)] uppercase">Categoria</label>
+                                            <input
+                                                className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 focus:ring-[var(--md-sys-color-primary)]"
+                                                list="categories"
+                                                value={editingProduct.category || ''}
+                                                onChange={e => setEditingProduct({ ...editingProduct, category: e.target.value })}
+                                            />
+                                            <datalist id="categories">
+                                                <option value="Bebidas" />
+                                                <option value="Alimentos" />
+                                                <option value="Serviços" />
+                                            </datalist>
+                                        </div>
+                                        <div className="col-span-2 flex items-center gap-3 p-4 bg-[var(--md-sys-color-surface)] rounded-lg border border-[var(--md-sys-color-outline-variant)]">
+                                            <input
+                                                type="checkbox"
+                                                id="isComposite"
+                                                className="w-5 h-5 accent-[var(--md-sys-color-primary)]"
+                                                checked={editingProduct.isComposite}
+                                                onChange={e => setEditingProduct({ ...editingProduct, isComposite: e.target.checked })}
+                                            />
+                                            <label htmlFor="isComposite" className="cursor-pointer select-none">
+                                                <span className="font-bold block">Produto Composto / Produzido</span>
+                                                <span className="text-xs text-[var(--md-sys-color-on-surface-variant)]">Marque se este produto é feito de outros ingredientes (Ex: Drink, Lanche)</span>
+                                            </label>
+                                        </div>
                                     </div>
                                 </div>
-                                <div className="grid grid-cols-3 gap-2 mt-4 bg-white p-3 rounded-xl border border-slate-100">
-                                    <div>
-                                        <span className="block text-[10px] text-slate-400 font-bold uppercase">Preço</span>
-                                        <span className="text-sm font-bold text-emerald-600">R$ {prod.price.toFixed(2)}</span>
-                                    </div>
-                                    <div>
-                                        <span className="block text-[10px] text-slate-400 font-bold uppercase">Custo</span>
-                                        <span className="text-sm font-bold text-slate-600">R$ {prodCost.toFixed(2)}</span>
-                                    </div>
-                                    <div>
-                                        <span className="block text-[10px] text-slate-400 font-bold uppercase">Margem</span>
-                                        <span className={`text-sm font-bold ${margin < 30 ? 'text-red-500' : 'text-indigo-600'}`}>{margin.toFixed(0)}%</span>
-                                    </div>
+                            )}
+
+                            {/* Recipe Tab */}
+                            {productTab === 'recipe' && (
+                                <div className="max-w-2xl mx-auto">
+                                    {!editingProduct.isComposite ? (
+                                        <div className="text-center py-10 opacity-50">
+                                            <Calculator size={48} className="mx-auto mb-2" />
+                                            <p>Habilite "Produto Composto" na aba Dados Básicos para configurar a receita.</p>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            <div className="flex justify-between items-center">
+                                                <h3 className="font-bold">Ingredientes da Receita</h3>
+                                                <Button size="sm" variant="tonal" onClick={addRecipeItem}>+ Adicionar</Button>
+                                            </div>
+                                            {(editingProduct.recipeItems || []).map((item, idx) => (
+                                                <div key={idx} className="flex gap-2 items-center bg-[var(--md-sys-color-surface)] p-2 rounded-lg border border-[var(--md-sys-color-outline-variant)]">
+                                                    <select
+                                                        className="flex-1 bg-transparent p-2 outline-none"
+                                                        value={item.ingredientId}
+                                                        onChange={e => updateRecipeItem(idx, 'ingredientId', e.target.value)}
+                                                    >
+                                                        <option value="">Selecione o insumo...</option>
+                                                        {ingredients.map(ing => (
+                                                            <option key={ing.id} value={ing.id}>{ing.name} ({ing.unit})</option>
+                                                        ))}
+                                                    </select>
+                                                    <input
+                                                        type="number" placeholder="Qtd"
+                                                        className="w-24 bg-[var(--md-sys-color-surface-container-highest)] p-2 rounded"
+                                                        value={item.quantity}
+                                                        onChange={e => updateRecipeItem(idx, 'quantity', parseFloat(e.target.value))}
+                                                    />
+                                                    <button onClick={() => removeRecipeItem(idx)} className="p-2 text-red-500 hover:bg-red-50 rounded-full">
+                                                        <Trash2 size={16} />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
-                            </Card>
-                        );
-                    })}
-                    {filteredProducts.length === 0 && <div className="col-span-full text-center py-10 text-slate-400">Nenhum produto cadastrado.</div>}
+                            )}
+
+                            {/* Pricing Tab */}
+                            {productTab === 'pricing' && (
+                                <div className="space-y-4 max-w-2xl mx-auto">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="font-bold">Preços por Tabela</h3>
+                                        <Button size="sm" variant="tonal" onClick={() => {
+                                            const tiers = editingProduct.pricingTiers || [];
+                                            setEditingProduct({ ...editingProduct, pricingTiers: [...tiers, { name: '', price: 0, minQuantity: 1 }] });
+                                        }}>+ Adicionar Tabela</Button>
+                                    </div>
+
+                                    {(editingProduct.pricingTiers || []).map((tier, idx) => (
+                                        <div key={idx} className="flex gap-2 items-end bg-[var(--md-sys-color-surface)] p-3 rounded-lg border border-[var(--md-sys-color-outline-variant)]">
+                                            <div className="flex-1">
+                                                <label className="text-[10px] font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">Nome da Tabela</label>
+                                                <input
+                                                    className="w-full bg-transparent border-b border-[var(--md-sys-color-outline)] p-1 outline-none text-sm"
+                                                    placeholder="Ex: Atacado, VIP"
+                                                    value={tier.name}
+                                                    onChange={e => {
+                                                        const tiers = [...(editingProduct.pricingTiers || [])];
+                                                        tiers[idx] = { ...tiers[idx], name: e.target.value };
+                                                        setEditingProduct({ ...editingProduct, pricingTiers: tiers });
+                                                    }}
+                                                />
+                                            </div>
+                                            <div className="w-24">
+                                                <label className="text-[10px] font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">Preço</label>
+                                                <input
+                                                    type="number" step="0.01"
+                                                    className="w-full bg-transparent border-b border-[var(--md-sys-color-outline)] p-1 outline-none text-sm"
+                                                    value={tier.price}
+                                                    onChange={e => {
+                                                        const tiers = [...(editingProduct.pricingTiers || [])];
+                                                        tiers[idx] = { ...tiers[idx], price: parseFloat(e.target.value) };
+                                                        setEditingProduct({ ...editingProduct, pricingTiers: tiers });
+                                                    }}
+                                                />
+                                            </div>
+                                            <div className="w-20">
+                                                <label className="text-[10px] font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">Qtd Min</label>
+                                                <input
+                                                    type="number"
+                                                    className="w-full bg-transparent border-b border-[var(--md-sys-color-outline)] p-1 outline-none text-sm"
+                                                    value={tier.minQuantity}
+                                                    onChange={e => {
+                                                        const tiers = [...(editingProduct.pricingTiers || [])];
+                                                        tiers[idx] = { ...tiers[idx], minQuantity: parseInt(e.target.value) };
+                                                        setEditingProduct({ ...editingProduct, pricingTiers: tiers });
+                                                    }}
+                                                />
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    const tiers = [...(editingProduct.pricingTiers || [])];
+                                                    tiers.splice(idx, 1);
+                                                    setEditingProduct({ ...editingProduct, pricingTiers: tiers });
+                                                }}
+                                                className="p-2 text-red-500 hover:bg-red-50 rounded-full mb-0.5"
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                    {(editingProduct.pricingTiers || []).length === 0 && (
+                                        <p className="text-center text-sm text-[var(--md-sys-color-on-surface-variant)] py-4">Nenhuma tabela de preço adicional configurada.</p>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Stock Tab (Batches) */}
+                            {productTab === 'stock' && (
+                                <div className="space-y-4 max-w-2xl mx-auto">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="font-bold">Lotes e Validade</h3>
+                                        <Button size="sm" variant="tonal" onClick={() => {
+                                            const batches = editingProduct.batches || [];
+                                            setEditingProduct({ ...editingProduct, batches: [...batches, { batchNumber: '', expirationDate: '', initialStock: 0, currentStock: 0 }] });
+                                        }}>+ Adicionar Lote</Button>
+                                    </div>
+
+                                    {(editingProduct.batches || []).map((batch, idx) => (
+                                        <div key={idx} className="flex flex-wrap gap-2 items-end bg-[var(--md-sys-color-surface)] p-3 rounded-lg border border-[var(--md-sys-color-outline-variant)]">
+                                            <div className="flex-1 min-w-[120px]">
+                                                <label className="text-[10px] font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">Nº Lote</label>
+                                                <input
+                                                    className="w-full bg-transparent border-b border-[var(--md-sys-color-outline)] p-1 outline-none text-sm"
+                                                    value={batch.batchNumber || ''}
+                                                    onChange={e => {
+                                                        const batches = [...(editingProduct.batches || [])];
+                                                        batches[idx] = { ...batches[idx], batchNumber: e.target.value };
+                                                        setEditingProduct({ ...editingProduct, batches });
+                                                    }}
+                                                />
+                                            </div>
+                                            <div className="w-32">
+                                                <label className="text-[10px] font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">Validade</label>
+                                                <input
+                                                    type="date"
+                                                    className="w-full bg-transparent border-b border-[var(--md-sys-color-outline)] p-1 outline-none text-sm"
+                                                    value={batch.expirationDate ? new Date(batch.expirationDate).toISOString().split('T')[0] : ''}
+                                                    onChange={e => {
+                                                        const batches = [...(editingProduct.batches || [])];
+                                                        batches[idx] = { ...batches[idx], expirationDate: new Date(e.target.value) };
+                                                        setEditingProduct({ ...editingProduct, batches });
+                                                    }}
+                                                />
+                                            </div>
+                                            <div className="w-24">
+                                                <label className="text-[10px] font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">Qtd</label>
+                                                <input
+                                                    type="number"
+                                                    className="w-full bg-transparent border-b border-[var(--md-sys-color-outline)] p-1 outline-none text-sm"
+                                                    value={batch.currentStock || 0}
+                                                    onChange={e => {
+                                                        const val = parseFloat(e.target.value);
+                                                        const batches = [...(editingProduct.batches || [])];
+                                                        batches[idx] = { ...batches[idx], currentStock: val, initialStock: val }; // Simplifying: init = current for new batches
+                                                        setEditingProduct({ ...editingProduct, batches });
+                                                    }}
+                                                />
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    const batches = [...(editingProduct.batches || [])];
+                                                    batches.splice(idx, 1);
+                                                    setEditingProduct({ ...editingProduct, batches });
+                                                }}
+                                                className="p-2 text-red-500 hover:bg-red-50 rounded-full mb-0.5"
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                    {(editingProduct.batches || []).length === 0 && (
+                                        <p className="text-center text-sm text-[var(--md-sys-color-on-surface-variant)] py-4">Nenhum lote registrado.</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="p-4 border-t border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface)] flex justify-end gap-3 rounded-b-[24px]">
+                            <Button variant="text" onClick={() => setIsProductModalOpen(false)}>Cancelar</Button>
+                            <Button onClick={(e) => handleSaveProduct(e as any)}>Salvar Produto</Button>
+                        </div>
+                    </div>
                 </div>
             )}
 
-            {/* MODAL INSUMO */}
-            {isIngModalOpen && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-[24px] w-full max-w-lg p-6 animate-in zoom-in-95 shadow-2xl">
-                        <h2 className="text-xl font-bold text-slate-900 mb-6">{newIngredient.id ? 'Editar Insumo' : 'Novo Insumo'}</h2>
-                        <form onSubmit={handleSaveIngredient} className="space-y-4">
+            {/* Ingredient Modal */}
+            {isIngredientModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                    <div className="bg-[var(--md-sys-color-surface)] w-full max-w-md rounded-[24px] shadow-2xl flex flex-col animate-in zoom-in-95 duration-200">
+                        <div className="p-6 border-b border-[var(--md-sys-color-outline-variant)] flex justify-between items-center">
+                            <h2 className="text-xl font-bold">Novo Insumo</h2>
+                            <button onClick={() => setIsIngredientModalOpen(false)} className="p-2 hover:bg-black/10 rounded-full"><X size={20} /></button>
+                        </div>
+                        <form onSubmit={handleSaveIngredient} className="p-6 space-y-4">
+                            <div>
+                                <label className="text-xs font-bold text-[var(--md-sys-color-on-surface-variant)] uppercase">Nome do Insumo</label>
+                                <input
+                                    required
+                                    className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 focus:ring-[var(--md-sys-color-primary)]"
+                                    value={editingIngredient.name || ''}
+                                    onChange={e => setEditingIngredient({ ...editingIngredient, name: e.target.value })}
+                                />
+                            </div>
                             <div className="grid grid-cols-2 gap-4">
-                                <div className="col-span-2">
-                                    <label className={labelClass}>Nome do Insumo</label>
-                                    <input className={inputClass} value={newIngredient.name || ''} onChange={e => setNewIngredient({ ...newIngredient, name: e.target.value })} autoFocus required placeholder="Ex: Vodka Absolut 1L" />
-                                </div>
                                 <div>
-                                    <label className={labelClass}>Fornecedor</label>
+                                    <label className="text-xs font-bold text-[var(--md-sys-color-on-surface-variant)] uppercase">Unidade</label>
                                     <select
-                                        className={inputClass}
-                                        value={newIngredient.supplierId || ''}
-                                        onChange={e => {
-                                            const sup = suppliers.find(s => s.id === e.target.value);
-                                            setNewIngredient({ ...newIngredient, supplierId: e.target.value, supplier: sup?.name || '' });
-                                        }}
+                                        className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 focus:ring-[var(--md-sys-color-primary)]"
+                                        value={editingIngredient.unit}
+                                        onChange={e => setEditingIngredient({ ...editingIngredient, unit: e.target.value })}
                                     >
-                                        <option value="">Selecione...</option>
-                                        {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                        <option value="UN">Unidade (UN)</option>
+                                        <option value="KG">Quilo (KG)</option>
+                                        <option value="L">Litro (L)</option>
+                                        <option value="CX">Caixa (CX)</option>
                                     </select>
                                 </div>
                                 <div>
-                                    <label className={labelClass}>Cód. Barras</label>
-                                    <div className="relative">
-                                        <input className={`${inputClass} pl-8`} value={newIngredient.barcode || ''} onChange={e => setNewIngredient({ ...newIngredient, barcode: e.target.value })} />
-                                        <ScanBarcode size={16} className="absolute left-2.5 top-3 text-slate-400" />
-                                    </div>
+                                    <label className="text-xs font-bold text-[var(--md-sys-color-on-surface-variant)] uppercase">Custo Embalagem</label>
+                                    <input
+                                        type="number" step="0.01"
+                                        className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 focus:ring-[var(--md-sys-color-primary)]"
+                                        value={editingIngredient.costPerPackage || ''}
+                                        onChange={e => setEditingIngredient({ ...editingIngredient, costPerPackage: parseFloat(e.target.value) })}
+                                    />
                                 </div>
                             </div>
-
-                            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className={labelClass}>Preço do Pacote (R$)</label>
-                                    <input type="number" step="0.01" className={inputClass} value={newIngredient.costPerPackage || ''} onChange={e => setNewIngredient({ ...newIngredient, costPerPackage: parseFloat(e.target.value) })} placeholder="0.00" required />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Volume Total / Qtd</label>
-                                    <input type="number" className={inputClass} value={newIngredient.volumePerPackage || ''} onChange={e => setNewIngredient({ ...newIngredient, volumePerPackage: parseFloat(e.target.value) })} placeholder="Ex: 1000 (para ml)" required />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Unidade de Medida</label>
-                                    <select className={inputClass} value={newIngredient.unit} onChange={e => setNewIngredient({ ...newIngredient, unit: e.target.value as UnitType })}>
-                                        <option value={UnitType.ML}>Mililitros (ml)</option>
-                                        <option value={UnitType.L}>Litros (l)</option>
-                                        <option value={UnitType.UN}>Unidade (un)</option>
-                                        <option value={UnitType.KG}>Quilos (kg)</option>
-                                        <option value={UnitType.G}>Gramas (g)</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Custo Unitário (Calc.)</label>
-                                    <div className="px-3 py-2.5 bg-slate-200 text-slate-600 rounded-lg font-bold text-sm">
-                                        R$ {((newIngredient.costPerPackage || 0) / (newIngredient.volumePerPackage || 1)).toFixed(4)}
-                                    </div>
-                                </div>
-                            </div>
-
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className={labelClass}>Estoque Atual</label>
-                                    <input type="number" className={inputClass} value={newIngredient.currentStock || ''} onChange={e => setNewIngredient({ ...newIngredient, currentStock: parseFloat(e.target.value) })} />
+                                    <label className="text-xs font-bold text-[var(--md-sys-color-on-surface-variant)] uppercase">Vol. Embalagem</label>
+                                    <input
+                                        type="number" step="0.001"
+                                        className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 focus:ring-[var(--md-sys-color-primary)]"
+                                        value={editingIngredient.volumePerPackage || ''}
+                                        onChange={e => setEditingIngredient({ ...editingIngredient, volumePerPackage: parseFloat(e.target.value) })}
+                                        placeholder="Ex: 1 ou 0.350"
+                                    />
                                 </div>
                                 <div>
-                                    <label className={labelClass}>Estoque Mínimo</label>
-                                    <input type="number" className={inputClass} value={newIngredient.minStock || ''} onChange={e => setNewIngredient({ ...newIngredient, minStock: parseFloat(e.target.value) })} />
+                                    <label className="text-xs font-bold text-[var(--md-sys-color-on-surface-variant)] uppercase">Estoque Atual</label>
+                                    <input
+                                        type="number" step="0.001"
+                                        className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 focus:ring-[var(--md-sys-color-primary)]"
+                                        value={editingIngredient.currentStock || ''}
+                                        onChange={e => setEditingIngredient({ ...editingIngredient, currentStock: parseFloat(e.target.value) })}
+                                    />
                                 </div>
                             </div>
 
-                            <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
-                                <Button variant="text" type="button" onClick={() => setIsIngModalOpen(false)}>Cancelar</Button>
+                            <div className="pt-4 flex justify-end gap-3">
+                                <Button variant="text" type="button" onClick={() => setIsIngredientModalOpen(false)}>Cancelar</Button>
                                 <Button type="submit">Salvar Insumo</Button>
                             </div>
                         </form>
                     </div>
                 </div>
             )}
-
-            {/* MODAL PRODUTO */}
-            {isProdModalOpen && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-[28px] w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl animate-in zoom-in-95">
-                        <div className="p-6 border-b border-slate-100 bg-slate-50/50 rounded-t-[28px]">
-                            <h2 className="text-xl font-bold text-slate-900">{newProduct.id ? 'Editar Produto' : 'Novo Produto'}</h2>
-                            <p className="text-xs text-slate-500 mt-1">Configure o preço de venda e a composição de custo.</p>
-                        </div>
-
-                        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="md:col-span-2">
-                                    <label className={labelClass}>Nome do Produto (Cardápio)</label>
-                                    <input className={inputClass} value={newProduct.name || ''} onChange={e => setNewProduct({ ...newProduct, name: e.target.value })} autoFocus required placeholder="Ex: Gin Tônica Clássica" />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Categoria</label>
-                                    <input className={inputClass} value={newProduct.category || ''} onChange={e => setNewProduct({ ...newProduct, category: e.target.value })} placeholder="Ex: Drinks, Cervejas" />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Preço de Venda (R$)</label>
-                                    <input type="number" step="0.01" className={`${inputClass} font-bold text-indigo-700`} value={newProduct.price || ''} onChange={e => setNewProduct({ ...newProduct, price: parseFloat(e.target.value) })} required />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Cód. Barras (Opcional)</label>
-                                    <div className="relative">
-                                        <input className={`${inputClass} pl-8`} value={newProduct.barcode || ''} onChange={e => setNewProduct({ ...newProduct, barcode: e.target.value })} />
-                                        <ScanBarcode size={16} className="absolute left-2.5 top-3 text-slate-400" />
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* MODE SWITCHER */}
-                            <div className="bg-slate-100 p-1 rounded-xl flex">
-                                <button
-                                    type="button"
-                                    onClick={() => setNewProduct({ ...newProduct, isComposite: false })}
-                                    className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${!newProduct.isComposite ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500'}`}
-                                >
-                                    Revenda Direta (Simples)
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setNewProduct({ ...newProduct, isComposite: true })}
-                                    className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${newProduct.isComposite ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500'}`}
-                                >
-                                    Ficha Técnica (Composto)
-                                </button>
-                            </div>
-
-                            {/* REVENDA LOGIC */}
-                            {!newProduct.isComposite && (
-                                <div className="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 space-y-4">
-                                    <h3 className="font-bold text-indigo-900 text-sm flex items-center gap-2"><Package size={16} /> Configuração de Estoque</h3>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div>
-                                            <label className={labelClass}>Insumo para Baixa</label>
-                                            <select
-                                                className={inputClass}
-                                                value={newProduct.resaleIngredientId || ''}
-                                                onChange={e => setNewProduct({ ...newProduct, resaleIngredientId: e.target.value })}
-                                            >
-                                                <option value="">Selecione o item do estoque...</option>
-                                                {ingredients.map(i => (
-                                                    <option key={i.id} value={i.id}>{i.name} ({i.currentStock} {i.unit})</option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className={labelClass}>Quantidade de Baixa</label>
-                                            <input
-                                                type="number"
-                                                className={inputClass}
-                                                value={newProduct.resaleQuantity || 1}
-                                                onChange={e => setNewProduct({ ...newProduct, resaleQuantity: parseFloat(e.target.value) })}
-                                            />
-                                            <p className="text-[10px] text-slate-500 mt-1">
-                                                Quantas unidades serão descontadas do estoque a cada venda?
-                                                (Ex: Se vender um Fardo de 12 latas, coloque 12 aqui).
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* COMPOSITE LOGIC */}
-                            {newProduct.isComposite && (
-                                <div className="bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 space-y-3">
-                                    <div className="flex justify-between items-center">
-                                        <h3 className="font-bold text-indigo-900 text-sm flex items-center gap-2"><Calculator size={16} /> Composição (Receita)</h3>
-                                        <Button variant="text" type="button" onClick={addRecipeItem} className="h-8 text-xs">+ Ingrediente</Button>
-                                    </div>
-
-                                    {newProduct.recipe?.map((item, idx) => (
-                                        <div key={idx} className="flex gap-2 items-center">
-                                            <select
-                                                className={`${inputClass} flex-1`}
-                                                value={item.ingredientId}
-                                                onChange={e => updateRecipeItem(idx, 'ingredientId', e.target.value)}
-                                            >
-                                                <option value="">Selecione...</option>
-                                                {ingredients.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
-                                            </select>
-                                            <div className="relative w-24">
-                                                <input
-                                                    type="number"
-                                                    className={`${inputClass} pr-8`}
-                                                    placeholder="Qtd"
-                                                    value={item.quantity}
-                                                    onChange={e => updateRecipeItem(idx, 'quantity', parseFloat(e.target.value))}
-                                                />
-                                            </div>
-                                            <button type="button" onClick={() => removeRecipeItem(idx)} className="p-2 text-red-400 hover:bg-red-50 rounded-full"><XCircle size={18} /></button>
-                                        </div>
-                                    ))}
-                                    {(!newProduct.recipe || newProduct.recipe.length === 0) && (
-                                        <p className="text-center text-sm text-indigo-300 py-2 italic">Nenhum ingrediente adicionado.</p>
-                                    )}
-                                </div>
-                            )}
-
-                            {/* FINANCE SUMMARY */}
-                            <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl">
-                                <div>
-                                    <span className="block text-xs text-slate-500 font-bold uppercase">Custo Estimado (CMV)</span>
-                                    <span className="text-lg font-bold text-slate-700">R$ {estimatedCost.toFixed(2)}</span>
-                                </div>
-                                <div className="text-right">
-                                    <span className="block text-xs text-slate-500 font-bold uppercase">Margem de Lucro</span>
-                                    <span className={`text-lg font-bold ${profitMargin < 0 ? 'text-red-500' : 'text-green-600'}`}>
-                                        {profitMargin.toFixed(1)}%
-                                    </span>
-                                </div>
-                            </div>
-
-                        </div>
-
-                        <div className="p-6 border-t border-slate-100 flex justify-end gap-3 bg-white rounded-b-[28px]">
-                            <Button variant="outlined" type="button" onClick={() => setIsProdModalOpen(false)}>Cancelar</Button>
-                            <Button type="button" onClick={(e) => handleSaveProduct(e as any)}>Salvar Produto</Button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
         </div>
     );
 }
