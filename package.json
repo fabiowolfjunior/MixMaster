@@ -1,14 +1,40 @@
 {
-  "name": "mixmaster-gestao",
+  "name": "mixmaster",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
+  "main": "electron/main.js",
+  "description": "MixMaster - Sistema de Gestão para Distribuidoras",
+  "author": "Fabio Wolfgrann Junior",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "server": "tsx server/index.ts",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "electron": "wait-on tcp:5173 && electron .",
+    "electron:dev": "concurrently -k \"cross-env BROWSER=none npm run dev\" \"npm run electron\"",
+    "electron:build": "vite build && electron-builder"
+  },
+  "build": {
+    "appId": "com.mixmaster.app",
+    "productName": "MixMaster",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "public/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   },
   "dependencies": {
     "@prisma/client": "^5.10.2",
@@ -27,9 +53,14 @@
     "@types/express": "^5.0.6",
     "@types/node": "^22.19.2",
     "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^39.2.6",
+    "electron-builder": "^26.0.12",
     "prisma": "^5.10.2",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "vite": "^6.2.0",
+    "wait-on": "^9.0.3"
   }
 }

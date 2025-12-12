@@ -1,353 +1,360 @@
-
 import React, { useState, useEffect } from 'react';
-import { Plus, Building2, Phone, Mail, History, ChevronDown, Save, X, MapPin, Briefcase, User, Tag, Calendar, Hash, ChevronRight, Check, Users, ShoppingBag, DollarSign, Smartphone } from 'lucide-react';
-import { Supplier, PurchaseRecord, Ingredient, PartnerRole, Contact, Sale } from '../types';
+import {
+    Plus, Building2, User, Search, Filter,
+    MoreVertical, Phone, Mail, MapPin, Edit2,
+    Check, X, Briefcase, Truck, ShoppingBag,
+    Wrench, UserCheck, Percent
+} from 'lucide-react';
 import { api } from '../services/api';
+import { useToast } from '../contexts/ToastContext';
 import { Button } from '../components/ui/Button';
-import { Card } from '../components/ui/Card';
+
+// --- Types ---
+interface Supplier {
+    id: string;
+    name: string;
+    legalName?: string;
+    type: 'PJ' | 'PF';
+    document: string;
+    roles: string[];
+    email?: string;
+    phone?: string;
+    address?: string;
+}
+
+const ROLES = [
+    { label: 'Fornecedor', color: 'bg-blue-100 text-blue-700' },
+    { label: 'Cliente', color: 'bg-green-100 text-green-700' },
+    { label: 'Transportadora', color: 'bg-orange-100 text-orange-700' },
+    { label: 'Colaborador', color: 'bg-purple-100 text-purple-700' }
+];
 
 export default function Suppliers() {
+    const { showToast } = useToast();
     const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-    const [ingredients, setIngredients] = useState<Ingredient[]>([]);
-    const [allSales, setAllSales] = useState<Sale[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState('');
 
-    // Modals
+    // Modal State
     const [isModalOpen, setIsModalOpen] = useState(false);
-    const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
+    const [editingId, setEditingId] = useState<string | null>(null);
 
-    // UI State
-    const [expandedId, setExpandedId] = useState<string | null>(null);
-    const [activeTab, setActiveTab] = useState<'geral' | 'contatos' | 'compras' | 'vendas'>('geral');
-    const [showOptionalData, setShowOptionalData] = useState(false);
-
-    // Forms Main Supplier
-    const [editSup, setEditSup] = useState<Partial<Supplier>>({
+    // Form State
+    const initialFormState: Partial<Supplier> = {
         type: 'PJ',
-        roles: ['Fornecedor']
-    });
-
-    // Form New Contact
-    const [newContact, setNewContact] = useState<Partial<Contact>>({});
-    const [isContactFormOpen, setIsContactFormOpen] = useState(false);
-
-    // Form New Purchase
-    const [newPurchase, setNewPurchase] = useState<{
-        supplierId: string;
-        items: { ingredientId: string; quantity: number; cost: number }[];
-    }>({ supplierId: '', items: [] });
-
-    const availableRoles: PartnerRole[] = [
-        'Fornecedor', 'Cliente', 'Transportadora', 'Fabricante',
-        'Vendedor', 'Técnico', 'Representada', 'Credenciadora'
-    ];
-
-    const fetchData = async () => {
-        try {
-            const [sups, ings, sales] = await Promise.all([
-                api.suppliers.list(),
-                api.ingredients.list(),
-                api.sales.list()
-            ]);
-            setSuppliers(sups);
-            setIngredients(ings);
-            setAllSales(sales);
-        } catch (e) {
-            console.error("Error loading suppliers data", e);
-        }
+        roles: ['Fornecedor'],
+        name: '',
+        legalName: '',
+        document: '',
+        email: '',
+        phone: '',
+        address: ''
     };
+    const [formData, setFormData] = useState<Partial<Supplier>>(initialFormState);
 
+    // --- Effects ---
     useEffect(() => {
-        fetchData();
+        loadSuppliers();
     }, []);
 
-    // --- Handlers ---
-
-    const handleSaveSupplier = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!editSup.name) return;
-
-        // Using create endpoint (assuming server handles upsert or clean create, currently create only in MVP)
-        // If ID exists, it SHOULD be an update, but my server only has POST /api/suppliers.
-        // For MVP migration, I'll rely on create or just Warn.
-        // Ideally I'd update server to upsert.
-
-        const payload = {
-            ...editSup,
-            roles: editSup.roles || [],
-            contacts: editSup.contacts || [],
-            history: editSup.history || []
-        };
-
-        await api.suppliers.create(payload);
-        setIsModalOpen(false);
-        fetchData();
-    };
-
-    const handleAddContact = () => {
-        // Nested update logic would require PUT /api/suppliers/:id which is missing.
-        // Warn user for now.
-        alert("Adicionar contato requer funcionalidade de edição (PUT) pendente no backend MVP.");
-        /*
-        if(!expandedId || !newContact.name) return;
-        const supplier = suppliers.find(s => s.id === expandedId);
-        if(supplier) {
-            ... logic ...
+    const loadSuppliers = async () => {
+        try {
+            setLoading(true);
+            const data = await api.suppliers.list();
+            setSuppliers(data);
+        } catch (error) {
+            console.error("Erro ao carregar parceiros:", error);
+            showToast("Erro ao carregar lista de parceiros", "error");
+        } finally {
+            setLoading(false);
         }
-        */
     };
 
-    const toggleRole = (role: PartnerRole) => {
-        setEditSup(prev => {
-            const currentRoles = prev.roles || [];
-            if (currentRoles.includes(role)) {
-                return { ...prev, roles: currentRoles.filter(r => r !== role) };
+    // --- Handlers ---
+    const handleOpenModal = (supplier?: Supplier) => {
+        if (supplier) {
+            setFormData({ ...supplier });
+            setEditingId(supplier.id);
+        } else {
+            setFormData({ ...initialFormState });
+            setEditingId(null);
+        }
+        setIsModalOpen(true);
+    };
+
+    const handleValidSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+
+        if (!formData.name || !formData.document) {
+            showToast("Nome e Documento são obrigatórios", "error");
+            return;
+        }
+
+        try {
+            const payload = {
+                name: formData.name,
+                legalName: formData.legalName,
+                type: formData.type,
+                document: formData.document,
+                roles: formData.roles,
+                email: formData.email,
+                phone: formData.phone,
+                address: formData.address
+            };
+
+            // NOTE: Currently API only supports Create (POST). 
+            // Update (PUT) logic would go here if/when backend supports it.
+            if (editingId) {
+                // await api.suppliers.update(editingId, payload); 
+                showToast("Edição ainda não implementada no servidor (MVP)", "info");
             } else {
-                return { ...prev, roles: [...currentRoles, role] };
+                await api.suppliers.create(payload);
+                showToast("Parceiro cadastrado com sucesso!", "success");
             }
-        });
+
+            setIsModalOpen(false);
+            loadSuppliers();
+        } catch (error) {
+            console.error(error);
+            showToast("Erro ao salvar parceiro", "error");
+        }
     };
 
-    const handleAddPurchase = () => {
-        // Requires PUT /api/suppliers/:id to update history OR a separate purchases endpoint.
-        // Warn user.
-        alert("Registrar compra requer funcionalidade de edição (PUT) pendente no backend MVP.");
+    const toggleRole = (role: string) => {
+        const currentRoles = formData.roles || [];
+        if (currentRoles.includes(role)) {
+            setFormData({ ...formData, roles: currentRoles.filter(r => r !== role) });
+        } else {
+            setFormData({ ...formData, roles: [...currentRoles, role] });
+        }
     };
 
-    const addPurchaseItemLine = () => {
-        setNewPurchase({
-            ...newPurchase,
-            items: [...newPurchase.items, { ingredientId: '', quantity: 1, cost: 0 }]
-        });
-    };
-
-    const inputClass = "w-full bg-white border border-slate-300 text-slate-900 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 md-input";
-    const labelClass = "block mb-1 text-sm font-medium text-slate-700";
+    // --- Filtering ---
+    const filteredSuppliers = suppliers.filter(s =>
+        s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        s.document.includes(searchTerm)
+    );
 
     return (
-        <div className="space-y-6 pb-24">
-            <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="h-full flex flex-col gap-6 fade-in">
+            {/* Header */}
+            <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                    <h1 className="text-3xl font-bold text-[#1b1b1f] tracking-tight">Parceiros e Fornecedores</h1>
-                    <p className="text-slate-500 mt-1">Gerencie cadastro de empresas e pessoas</p>
+                    <h1 className="text-3xl font-bold text-[var(--md-sys-color-on-surface)]">Parceiros</h1>
+                    <p className="text-[var(--md-sys-color-on-surface-variant)]">
+                        Gerencie clientes, fornecedores e colaboradores
+                    </p>
                 </div>
                 <div className="flex gap-3">
-                    <Button variant="tonal" onClick={() => setIsPurchaseModalOpen(true)}>Nova Compra</Button>
-                    <Button variant="filled" icon={<Plus />} onClick={() => {
-                        setEditSup({ type: 'PJ', roles: ['Fornecedor'], registrationDate: new Date().toISOString().split('T')[0] });
-                        setShowOptionalData(false);
-                        setIsModalOpen(true);
-                    }}>Novo Parceiro</Button>
+                    <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                        <input
+                            type="text"
+                            placeholder="Buscar parceiro..."
+                            className="pl-10 pr-4 py-2 rounded-full border border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface)] focus:ring-2 focus:ring-[var(--md-sys-color-primary)] outline-none"
+                            value={searchTerm}
+                            onChange={e => setSearchTerm(e.target.value)}
+                        />
+                    </div>
+                    <Button icon={<Plus size={18} />} onClick={() => handleOpenModal()}>
+                        Novo
+                    </Button>
                 </div>
             </header>
 
-            <div className="flex flex-col gap-4">
-                {suppliers.map(sup => (
-                    <Card key={sup.id} variant={expandedId === sup.id ? 'elevated' : 'outlined'} className="transition-all duration-300">
+            {/* List */}
+            {loading ? (
+                <div className="flex-1 flex items-center justify-center">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+                </div>
+            ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-20">
+                    {filteredSuppliers.map(supplier => (
                         <div
-                            className="p-5 flex items-center justify-between cursor-pointer"
-                            onClick={() => {
-                                if (expandedId === sup.id) {
-                                    setExpandedId(null);
-                                } else {
-                                    setExpandedId(sup.id);
-                                    setActiveTab('geral');
-                                }
-                            }}
+                            key={supplier.id}
+                            className="group relative bg-[var(--md-sys-color-surface-container-low)] p-5 rounded-[20px] border border-[var(--md-sys-color-outline-variant)] hover:shadow-md transition-all cursor-pointer"
+                            onClick={() => handleOpenModal(supplier)}
                         >
-                            <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center shrink-0">
-                                    {sup.type === 'PJ' ? <Building2 size={24} /> : <User size={24} />}
+                            <div className="flex justify-between items-start mb-4">
+                                <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl font-bold
+                                    ${supplier.type === 'PJ' ? 'bg-indigo-100 text-indigo-700' : 'bg- emerald-100 text-emerald-700'}
+                                `}>
+                                    {supplier.type === 'PJ' ? <Building2 size={24} /> : <User size={24} />}
                                 </div>
-                                <div>
-                                    <h3 className="text-lg font-bold text-slate-900">{sup.name}</h3>
-                                    <div className="flex flex-wrap gap-2 mt-1">
-                                        {sup.roles && sup.roles.map(r => (
-                                            <span key={r} className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full uppercase tracking-wide border border-slate-200">
-                                                {r}
-                                            </span>
-                                        ))}
+                                <div className="flex gap-1 flex-wrap justify-end max-w-[50%]">
+                                    {supplier.roles.map(role => (
+                                        <span key={role} className="text-[10px] px-2 py-1 rounded-full bg-[var(--md-sys-color-surface-variant)] text-[var(--md-sys-color-on-surface-variant)] font-medium">
+                                            {role}
+                                        </span>
+                                    ))}
+                                    <div className="flex gap-2 relative z-10">
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleOpenModal(supplier); }}
+                                            className="p-2 text-[var(--md-sys-color-primary)] hover:bg-[var(--md-sys-color-primary-container)] rounded-full transition-colors"
+                                            title="Editar"
+                                        >
+                                            <Edit2 size={16} />
+                                        </button>
+                                        <button
+                                            onClick={async (e) => {
+                                                e.stopPropagation();
+                                                if (window.confirm('Excluir este parceiro?')) {
+                                                    await api.suppliers.delete(supplier.id);
+                                                    showToast("Parceiro excluído", "success");
+                                                    loadSuppliers();
+                                                }
+                                            }}
+                                            className="p-2 text-[var(--md-sys-color-error)] hover:bg-[var(--md-sys-color-error-container)] rounded-full transition-colors"
+                                            title="Excluir"
+                                        >
+                                            <X size={16} />
+                                        </button>
                                     </div>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-6">
-                                <div className="text-right hidden sm:block">
-                                    <span className="block text-xs text-slate-500 uppercase font-semibold">Contato</span>
-                                    <span className="font-medium text-slate-700 text-sm">{sup.phone || sup.email || '-'}</span>
-                                </div>
-                                <div className={`transition-transform duration-300 ${expandedId === sup.id ? 'rotate-180' : ''}`}>
-                                    <ChevronDown className="text-slate-400" />
-                                </div>
+
+                            <h3 className="text-lg font-bold text-[var(--md-sys-color-on-surface)] mb-1">{supplier.name}</h3>
+                            <p className="text-sm text-[var(--md-sys-color-on-surface-variant)] mb-4">{supplier.legalName || supplier.document}</p>
+
+                            <div className="space-y-2">
+                                {supplier.phone && (
+                                    <div className="flex items-center gap-2 text-sm text-[var(--md-sys-color-on-surface-variant)]">
+                                        <Phone size={14} /> {supplier.phone}
+                                    </div>
+                                )}
+                                {supplier.email && (
+                                    <div className="flex items-center gap-2 text-sm text-[var(--md-sys-color-on-surface-variant)]">
+                                        <Mail size={14} /> {supplier.email}
+                                    </div>
+                                )}
                             </div>
                         </div>
+                    ))}
 
-                        {/* EXPANDED SECTION WITH TABS */}
-                        {expandedId === sup.id && (
-                            <div className="border-t border-slate-100 bg-slate-50/50 p-6 animate-in slide-in-from-top-1">
+                    {filteredSuppliers.length === 0 && (
+                        <div className="col-span-full flex flex-col items-center justify-center py-12 text-[var(--md-sys-color-outline)]">
+                            <UserCheck size={48} className="mb-4 opacity-50" />
+                            <p>Nenhum parceiro encontrado</p>
+                        </div>
+                    )}
+                </div>
+            )}
 
-                                {/* Internal Navigation Tabs */}
-                                <div className="flex gap-2 border-b border-slate-200 pb-0 mb-6 overflow-x-auto">
-                                    {[
-                                        { id: 'geral', label: 'Visão Geral', icon: <Briefcase size={16} /> },
-                                        { id: 'contatos', label: 'Contatos', icon: <Users size={16} /> },
-                                        { id: 'compras', label: 'Histórico de Compras', icon: <History size={16} />, show: true },
-                                        { id: 'vendas', label: 'Histórico de Vendas', icon: <DollarSign size={16} />, show: true }
-                                    ].map(tab => {
-                                        if (tab.show === false) return null;
+            {/* Modal */}
+            {isModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+                    <div className="bg-[var(--md-sys-color-surface)] w-full max-w-2xl rounded-[28px] shadow-2xl overflow-hidden max-h-[90vh] flex flex-col animate-in zoom-in-95 duration-200">
+                        <div className="p-6 border-b border-[var(--md-sys-color-outline-variant)] flex justify-between items-center">
+                            <h2 className="text-xl font-bold">{editingId ? 'Editar Parceiro' : 'Novo Parceiro'}</h2>
+                            <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-black/5 rounded-full"><X size={24} /></button>
+                        </div>
+
+                        <form onSubmit={handleValidSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
+                            {/* Type Selection */}
+                            <div className="flex p-1 bg-[var(--md-sys-color-surface-container-high)] rounded-lg w-fit">
+                                <button
+                                    type="button"
+                                    onClick={() => setFormData({ ...formData, type: 'PJ', document: '' })}
+                                    className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${formData.type === 'PJ' ? 'bg-[var(--md-sys-color-surface)] shadow-sm' : 'opacity-70'}`}
+                                >
+                                    Pessoa Jurídica
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setFormData({ ...formData, type: 'PF', document: '' })}
+                                    className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${formData.type === 'PF' ? 'bg-[var(--md-sys-color-surface)] shadow-sm' : 'opacity-70'}`}
+                                >
+                                    Pessoa Física
+                                </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                    <label className="text-xs font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">
+                                        {formData.type === 'PJ' ? 'CNPJ' : 'CPF'} <span className="text-red-500">*</span>
+                                    </label>
+                                    <input
+                                        required
+                                        className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 ring-indigo-500"
+                                        value={formData.document}
+                                        onChange={e => setFormData({ ...formData, document: e.target.value })}
+                                        placeholder={formData.type === 'PJ' ? '00.000.000/0000-00' : '000.000.000-00'}
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">
+                                        Nome Principal <span className="text-red-500">*</span>
+                                    </label>
+                                    <input
+                                        required
+                                        className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 ring-indigo-500"
+                                        value={formData.name}
+                                        onChange={e => setFormData({ ...formData, name: e.target.value })}
+                                        placeholder="Nome Fantasia ou Apelido"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="space-y-1">
+                                <label className="text-xs font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">
+                                    {formData.type === 'PJ' ? 'Razão Social' : 'Nome Completo'}
+                                </label>
+                                <input
+                                    className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 ring-indigo-500"
+                                    value={formData.legalName}
+                                    onChange={e => setFormData({ ...formData, legalName: e.target.value })}
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                    <label className="text-xs font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">Email</label>
+                                    <input
+                                        type="email"
+                                        className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 ring-indigo-500"
+                                        value={formData.email}
+                                        onChange={e => setFormData({ ...formData, email: e.target.value })}
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">Telefone</label>
+                                    <input
+                                        className="w-full p-3 rounded-lg bg-[var(--md-sys-color-surface-container-highest)] border-none focus:ring-2 ring-indigo-500"
+                                        value={formData.phone}
+                                        onChange={e => setFormData({ ...formData, phone: e.target.value })}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="space-y-1">
+                                <label className="text-xs font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">Funções</label>
+                                <div className="flex flex-wrap gap-2">
+                                    {['Fornecedor', 'Cliente', 'Transportadora', 'Colaborador'].map(role => {
+                                        const isActive = formData.roles?.includes(role);
                                         return (
                                             <button
-                                                key={tab.id}
-                                                onClick={() => setActiveTab(tab.id as any)}
-                                                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap
-                                    ${activeTab === tab.id
-                                                        ? 'border-indigo-600 text-indigo-700'
-                                                        : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'}`}
+                                                key={role}
+                                                type="button"
+                                                onClick={() => toggleRole(role)}
+                                                className={`px-4 py-2 rounded-full border text-sm font-medium transition-all
+                                                    ${isActive
+                                                        ? 'bg-indigo-100 border-indigo-200 text-indigo-700'
+                                                        : 'border-[var(--md-sys-color-outline)] text-[var(--md-sys-color-on-surface-variant)] hover:bg-black/5'}
+                                                `}
                                             >
-                                                {tab.icon} {tab.label}
+                                                {role}
                                             </button>
-                                        );
+                                        )
                                     })}
                                 </div>
-
-                                {/* TAB CONTENT */}
-                                <div className="min-h-[200px]">
-
-                                    {/* --- GERAL --- */}
-                                    {activeTab === 'geral' && (
-                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                                            <div className="space-y-4">
-                                                <div className="flex justify-between items-center">
-                                                    <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Ficha Cadastral</h4>
-                                                    <Button variant="text" className="h-8 text-xs" onClick={() => { /* setEditSup(sup); setIsModalOpen(true); */ alert("Edição em breve"); }}>Editar Dados</Button>
-                                                </div>
-                                                <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 text-sm">
-                                                    <div>
-                                                        <span className="text-slate-400 text-xs block mb-1">Razão Social / Nome</span>
-                                                        <span className="font-medium text-slate-800">{sup.legalName || sup.name}</span>
-                                                    </div>
-                                                    <div>
-                                                        <span className="text-slate-400 text-xs block mb-1">{sup.type === 'PJ' ? 'CNPJ' : 'CPF'}</span>
-                                                        <span className="font-medium font-mono text-slate-800">{sup.document || '-'}</span>
-                                                    </div>
-                                                    <div>
-                                                        <span className="text-slate-400 text-xs block mb-1">Email Comercial</span>
-                                                        <span className="font-medium text-slate-800">{sup.commercialEmail || sup.email || '-'}</span>
-                                                    </div>
-                                                    <div>
-                                                        <span className="text-slate-400 text-xs block mb-1">Telefone Principal</span>
-                                                        <span className="font-medium text-slate-800">{sup.phone || '-'}</span>
-                                                    </div>
-                                                    {sup.unitValue !== undefined && (
-                                                        <div>
-                                                            <span className="text-slate-400 text-xs block mb-1">Valor Unitário (Ref.)</span>
-                                                            <span className="font-medium text-slate-800">R$ {sup.unitValue.toFixed(2)}</span>
-                                                        </div>
-                                                    )}
-                                                    <div className="col-span-1 md:col-span-2">
-                                                        <span className="text-slate-400 text-xs block mb-1">Endereço</span>
-                                                        <span className="font-medium text-slate-800">{sup.address || '-'}</span>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* --- CONTATOS --- */}
-                                    {activeTab === 'contatos' && (
-                                        <div className="space-y-4">
-                                            <div className="flex justify-between items-center">
-                                                <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Contatos Adicionais</h4>
-                                                <Button variant="tonal" icon={<Plus size={16} />} className="h-8 text-xs" onClick={() => setIsContactFormOpen(true)}>Adicionar Contato</Button>
-                                            </div>
-
-                                            {isContactFormOpen && (
-                                                <div className="bg-slate-100 p-4 rounded-xl border border-slate-200 mb-4 animate-in slide-in-from-top-2">
-                                                    <h5 className="font-bold text-sm mb-3 text-slate-700">Novo Contato</h5>
-                                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-                                                        <input className={inputClass} placeholder="Nome" value={newContact.name || ''} onChange={e => setNewContact({ ...newContact, name: e.target.value })} />
-                                                        <input className={inputClass} placeholder="Cargo (Ex: Gerente)" value={newContact.role || ''} onChange={e => setNewContact({ ...newContact, role: e.target.value })} />
-                                                        {/* ... other fields */}
-                                                    </div>
-                                                    <div className="flex justify-end gap-2">
-                                                        <Button variant="text" onClick={() => setIsContactFormOpen(false)}>Cancelar</Button>
-                                                        <Button onClick={handleAddContact}>Salvar Contato</Button>
-                                                    </div>
-                                                </div>
-                                            )}
-
-                                            {(!sup.contacts || sup.contacts.length === 0) ? (
-                                                <div className="text-center py-8 text-slate-400 border-2 border-dashed border-slate-200 rounded-xl">
-                                                    <Users size={32} className="mx-auto mb-2 opacity-50" />
-                                                    <p>Nenhum contato adicional cadastrado.</p>
-                                                </div>
-                                            ) : (
-                                                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                                                    {sup.contacts.map((contact, idx) => (
-                                                        <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:border-indigo-200 transition-colors">
-                                                            <div className="flex items-start justify-between mb-2">
-                                                                <div className="flex items-center gap-2">
-                                                                    <div className="w-8 h-8 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center font-bold text-xs">
-                                                                        {contact.name.charAt(0)}
-                                                                    </div>
-                                                                    <div>
-                                                                        <h5 className="font-bold text-slate-800 text-sm">{contact.name}</h5>
-                                                                        <p className="text-xs text-slate-500">{contact.role || 'Sem cargo'}</p>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-
-                                    {/* --- HISTORY tabs omitted for brevity but would function similarly logic-wise --- */}
-                                </div>
                             </div>
-                        )}
-                    </Card>
-                ))}
-            </div>
+                        </form>
 
-            {/* MODALS */}
-            {(isModalOpen || isPurchaseModalOpen) && (
-                <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-                    {/* EDIT SUPPLIER MODAL */}
-                    {isModalOpen && (
-                        <div className="bg-white rounded-[28px] w-full max-w-2xl flex flex-col max-h-[90vh] shadow-2xl animate-in zoom-in-95">
-                            {/* ... FORM CONTENT ... */}
-                            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 rounded-t-[28px]">
-                                <div>
-                                    <h2 className="text-xl font-bold text-slate-800">
-                                        {editSup.id ? 'Editar Parceiro' : 'Novo Parceiro'}
-                                    </h2>
-                                    <p className="text-slate-500 text-xs mt-1">Preencha os dados cadastrais da empresa ou pessoa.</p>
-                                </div>
-                                <button onClick={() => setIsModalOpen(false)} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"><X size={24} /></button>
-                            </div>
-
-                            <form onSubmit={handleSaveSupplier} className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
-                                {/* Simply reusing fields */}
-                                <div className="md:col-span-2">
-                                    <label className={labelClass}>Nome Fantasia / Apelido <span className="text-red-500">*</span></label>
-                                    <input className={inputClass} value={editSup.name || ''} onChange={e => setEditSup({ ...editSup, name: e.target.value })} required autoFocus />
-                                </div>
-                                {/* More fields... */}
-                            </form>
-
-                            <div className="p-6 pt-4 border-t border-slate-100 flex justify-end gap-3 bg-white rounded-b-[28px]">
-                                <Button variant="outlined" type="button" onClick={() => setIsModalOpen(false)}>Cancelar</Button>
-                                <Button type="button" onClick={(e) => handleSaveSupplier(e as any)}>Salvar Parceiro</Button>
-                            </div>
+                        <div className="p-6 border-t border-[var(--md-sys-color-outline-variant)] flex justify-end gap-3">
+                            <Button variant="text" onClick={() => setIsModalOpen(false)}>Cancelar</Button>
+                            <Button onClick={(e) => handleValidSubmit(e as any)}>Salvar Parceiro</Button>
                         </div>
-                    )}
-
-                    {isPurchaseModalOpen && (
-                        <div className="bg-white p-6 rounded-2xl">
-                            <p>Funcionalidade de compra requer atualização do backend.</p>
-                            <Button onClick={() => setIsPurchaseModalOpen(false)}>Fechar</Button>
-                        </div>
-                    )}
+                    </div>
                 </div>
             )}
         </div>
